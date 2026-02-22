@@ -198,45 +198,53 @@ func FindGitDir() (string, error) {
 	}
 }
 
-func GetObjectType(hash string) (string, error) {
+func findPartialHash(hash string) (int, []string, error) {
 	if len(hash) < 4 {
-		return "", fmt.Errorf("hash too short: %s", hash)
+		return 0, nil, fmt.Errorf("hash too short: %s", hash)
 	}
-
 	gitDir, err := FindGitDir()
 	if err != nil {
-		return "", err
+		return 0, nil, err
 	}
 
 	objDir := filepath.Join(gitDir, "objects", hash[:2])
 	prefix := hash[2:]
-
 	entries, err := os.ReadDir(objDir)
+
 	if err != nil {
 		if os.IsNotExist(err) {
-			return "", fmt.Errorf("object %s does not exist", hash)
+			return 0, nil, fmt.Errorf("object %s does not exist", hash)
 		}
-		return "", err
+		return 0, nil, err
 	}
 
 	var matches []string
 	for _, entry := range entries {
 		if !entry.IsDir() && strings.HasPrefix(entry.Name(), prefix) {
-			matches = append(matches, entry.Name())
+			matches = append(matches, filepath.Join(objDir, entry.Name()))
 		}
 	}
 
-	switch len(matches) {
+	return len(matches), matches, nil
+}
+
+func GetObjectType(hash string) (string, error) {
+
+	matchCount, matches, err := findPartialHash(hash)
+	if err != nil {
+		return "", err
+	}
+
+	switch matchCount {
 	case 0:
 		return "", fmt.Errorf("object %s does not exist", hash)
 	case 1:
-		fullPath := filepath.Join(objDir, matches[0])
+		fullPath := matches[0]
 		objType, _, err := extractHeaderInfoFromFile(fullPath)
 		return objType, err
 	default:
-		return "", fmt.Errorf("ambiguous object %s (%d matches)", hash, len(matches))
+		return "", fmt.Errorf("ambiguous object %s (%d matches)", hash, matchCount)
 	}
-
 }
 
 func extractHeaderInfoFromFile(path string) (string, int64, error) {
