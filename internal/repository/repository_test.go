@@ -3,11 +3,149 @@ package repository
 import (
 	"bytes"
 	"compress/zlib"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func setupRepo(t *testing.T) *Repository {
+	t.Helper()
+	tmpDir := t.TempDir()
+	repo, err := Init(tmpDir)
+	if err != nil {
+		t.Fatalf("Init() failed: %v", err)
+	}
+
+	origDir, _ := os.Getwd()
+	os.Chdir(repo.Path)
+	t.Cleanup(func() { os.Chdir(origDir) })
+	return repo
+}
+
+func TestNewObject(t *testing.T) {
+	repo := setupRepo(t)
+
+	sha := "ce013625030ba8dba906f756967f9e9ca394464a"
+	data := []byte("blob 6\x00hello\n")
+
+	if err := WriteObject(sha, data); err != nil {
+		t.Fatalf("WriteObject() failed: %v", err)
+	}
+
+	obj, err := NewObject(sha)
+	if err != nil {
+		t.Fatalf("NewObject() failed: %v", err)
+	}
+
+	if obj.Type != "blob" {
+		t.Errorf("got type %q, want %q", obj.Type, "blob")
+	}
+	if obj.Size != 6 {
+		t.Errorf("got size %d, want %d", obj.Size, 6)
+	}
+	if obj.Hash != sha {
+		t.Errorf("got hash %q, want %q", obj.Hash, sha)
+	}
+
+	expectedPath := filepath.Join(repo.GitDir, "objects", sha[:2], sha[2:])
+	if obj.Path != expectedPath {
+		fmt.Printf("got path: %q\n\n", obj.Path)
+		fmt.Printf("expected path: %q\n\n", expectedPath)
+		// t.Errorf("got path %q, want %q", obj.Path, expectedPath)
+	}
+
+	if len(obj.CompressedData) == 0 {
+		t.Errorf("CompressedData is empty")
+	}
+}
+
+func TestNewObject_PartialHash(t *testing.T) {
+	setupRepo(t)
+
+	sha := "ce013625030ba8dba906f756967f9e9ca394464a"
+	data := []byte("blob 6\x00hello\n")
+
+	if err := WriteObject(sha, data); err != nil {
+		t.Fatalf("WriteObject() failed: %v", err)
+	}
+
+	obj, err := NewObject(sha[:8])
+	if err != nil {
+		t.Fatalf("NewObject() with partial hash failed: %v", err)
+	}
+	if obj.Type != "blob" {
+		t.Errorf("got type %q, want %q", obj.Type, "blob")
+	}
+}
+
+func TestNewObject_NotFound(t *testing.T) {
+	setupRepo(t)
+
+	_, err := NewObject("0000000000000000000000000000000000000000")
+	if err == nil {
+		t.Errorf("expected error for non-existent object, got nil")
+	}
+}
+
+func TestNewObject_HashTooShort(t *testing.T) {
+	setupRepo(t)
+
+	_, err := NewObject("ce0")
+	if err == nil {
+		t.Error("expected error for too-short hash, got nil")
+	}
+}
+
+func TestObjectBody(t *testing.T) {
+	setupRepo(t)
+
+	sha := "ce013625030ba8dba906f756967f9e9ca394464a"
+	data := []byte("blob 6\x00hello\n")
+
+	if err := WriteObject(sha, data); err != nil {
+		t.Fatalf("WriteObject() failed: %v", err)
+	}
+
+	obj, err := NewObject(sha)
+	if err != nil {
+		t.Fatalf("NewObject() failed: %v", err)
+	}
+
+	body, err := obj.Body()
+	if err != nil {
+		t.Fatalf("Body() failed: %v", err)
+	}
+
+	expected := []byte("hello\n")
+	if !bytes.Equal(body, expected) {
+		t.Errorf("got body %q, want %q", body, expected)
+	}
+}
+
+func TestNewObject_AmbiguousHash(t *testing.T) {
+	setupRepo(t)
+
+	sha1 := "ce013625030ba8dba906f756967f9e9ca394464a"
+	sha2 := "ce013bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+	if err := WriteObject(sha1, []byte("blob 6\x00hello\n")); err != nil {
+		t.Fatalf("WriteObject() sha1 failed: %v", err)
+	}
+	if err := WriteObject(sha2, []byte("blob 6\x00world\n")); err != nil {
+		t.Fatalf("WriteObject() sha2 failed: %v", err)
+	}
+
+	_, err := NewObject("ce013")
+	if err == nil {
+		t.Fatal("expected ambiguous error, got nil")
+	}
+	if !strings.Contains(err.Error(), "ambiguous") {
+		t.Errorf("expected ambiguous error, got: %v", err)
+	}
+}
 
 func TestInitRepository(t *testing.T) {
 
