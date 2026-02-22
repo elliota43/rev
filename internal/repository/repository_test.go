@@ -104,3 +104,63 @@ func TestWriteObject(t *testing.T) {
 		t.Errorf("decompressed data mismatch.\n  got: %q\nwant: %q", &decompressed, objectData)
 	}
 }
+
+func TestGetObjectType(t *testing.T) {
+	tmpDir := t.TempDir()
+	repo, err := Init(tmpDir)
+	if err != nil {
+		t.Fatalf("Init() failed: %v", err)
+	}
+
+	origDir, _ := os.Getwd()
+	os.Chdir(repo.Path)
+	defer os.Chdir(origDir)
+
+	tests := []struct {
+		name     string
+		sha      string
+		data     []byte
+		wantType string
+	}{
+		{
+			name:     "blob object",
+			sha:      "ce013625030ba8dba906f756967f9e9ca394464a",
+			data:     []byte("blob 6\x00hello\n"),
+			wantType: "blob",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := WriteObject(tt.sha, tt.data); err != nil {
+				t.Fatalf("WriteObject() failed: %v", err)
+			}
+
+			gotType, err := GetObjectType(tt.sha)
+			if err != nil {
+				t.Fatalf("GetObjectType() failed: %v", err)
+			}
+
+			if gotType != tt.wantType {
+				t.Errorf("got type %q, want %q", gotType, tt.wantType)
+			}
+		})
+	}
+}
+
+func TestGetObjectType_NotFound(t *testing.T) {
+	tmpDir := t.TempDir()
+	repo, err := Init(tmpDir)
+	if err != nil {
+		t.Fatalf("Init() failed: %v", err)
+	}
+
+	origDir, _ := os.Getwd()
+	os.Chdir(repo.Path)
+	defer os.Chdir(origDir)
+
+	_, err = GetObjectType("0000000000000000000000000000000000000000")
+	if err == nil {
+		t.Errorf("expected error for non-existent object, got nil")
+	}
+}

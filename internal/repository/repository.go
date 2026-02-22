@@ -1,12 +1,15 @@
 package repository
 
 import (
+	"bufio"
 	"bytes"
 	"compress/zlib"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 )
 
 type Repository struct {
@@ -193,4 +196,70 @@ func FindGitDir() (string, error) {
 
 		dir = parent
 	}
+}
+
+func GetObjectType(hash string) (string, error) {
+	if len(hash) < 4 {
+		return "", fmt.Errorf("hash too short: %s", hash)
+	}
+
+	gitDir, err := FindGitDir()
+	if err != nil {
+		return "", err
+	}
+
+	objDir := filepath.Join(gitDir, "objects", hash[:2])
+	prefix := hash[2:]
+
+	entries, err := os.ReadDir(objDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("object %s does not exist", hash)
+		}
+		return "", err
+	}
+
+	var matches []string
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasPrefix(entry.Name(), prefix) {
+			matches = append(matches, entry.Name())
+		}
+	}
+
+	switch len(matches) {
+	case 0:
+		return "", fmt.Errorf("object %s does not exist", hash)
+	case 1:
+		fullPath := filepath.Join(objDir, matches[0])
+		objType, _, err := extractHeaderInfoFromFile(fullPath)
+		return objType, err
+	default:
+		return "", fmt.Errorf("ambiguous object %s (%d matches)", hash, len(matches))
+	}
+
+}
+
+func extractHeaderInfoFromFile(path string) (string, int64, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", 0, err
+	}
+	defer file.Close()
+
+	zreader, err := zlib.NewReader(file)
+	if err != nil {
+		return "", 0, err
+	}
+	defer zreader.Close()
+
+	headerBytes, err := bufio.NewReader(zreader).ReadString('\x00')
+	if err != nil {
+		return "", 0, err
+	}
+
+	parts := strings.Split(strings.TrimSpace(headerBytes), " ")
+	objType := parts[0]
+	objSize, _ := strconv.Atoi(parts[1])
+
+	return objType, int64(objSize), nil
 }
