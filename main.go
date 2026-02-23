@@ -7,121 +7,163 @@ import (
 	"io"
 	"os"
 
-	githash "github.com/elliota43/rev/internal/githash"
+	"github.com/elliota43/rev/internal/object"
 	"github.com/elliota43/rev/internal/repository"
 )
 
 func main() {
-	initCmd := flag.NewFlagSet("init", flag.ExitOnError)
-
-	hashObjCmd := flag.NewFlagSet("hash-object", flag.ExitOnError)
-	hashWrite := hashObjCmd.Bool("w", false, "Write the object into the object database.")
-	hashStdin := hashObjCmd.Bool("stdin", false, "Read the object from standard input.")
-
 	if len(os.Args) < 2 {
-		fmt.Println("expected at least one command")
+		printUsage()
 		os.Exit(1)
 	}
 
+	var err error
 	switch os.Args[1] {
 	case "init":
-		err := initCmd.Parse(os.Args[2:])
-		if err != nil {
-			printUsage()
-			os.Exit(1)
-		}
-
-		dir := initCmd.Arg(0)
-
-		if dir == "" {
-			fmt.Println("Initializing git repository in current directory...")
-			dir = "."
-		}
-
-		fmt.Printf("initializing git repository in directory: %s\n", dir)
-		_, err = repository.Init(dir)
-		if err != nil {
-			fmt.Printf("error initializing repository: %v", err)
-		}
-
-		fmt.Println("Git repo initiailized successfully.")
-		os.Exit(0)
-
+		err = runInit(os.Args[2:])
 	case "hash-object":
-		err := hashObjCmd.Parse(os.Args[2:])
-		if err != nil {
-			printUsage()
-			os.Exit(1)
-		}
-
-		var reader io.Reader
-		var size int64
-
-		if *hashStdin {
-			data, err := io.ReadAll(os.Stdin)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "error reading stdin: %v\n", err)
-				os.Exit(1)
-			}
-
-			size = int64(len(data))
-			reader = bytes.NewReader(data)
-		} else {
-			filePath := hashObjCmd.Arg(0)
-			if filePath == "" {
-				fmt.Fprintln(os.Stderr, "hash-object requires a file path or --stdin")
-				os.Exit(1)
-			}
-
-			info, err := os.Stat(filePath)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "error reading file info: %v\n", err)
-				os.Exit(1)
-			}
-
-			size = info.Size()
-
-			f, err := os.Open(filePath)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "error opening file: %v\n", err)
-				os.Exit(1)
-			}
-
-			defer f.Close()
-			reader = f
-		}
-
-		sha, content, err := githash.Hash("blob", reader, size)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error hashing object: %v\n", err)
-			os.Exit(1)
-		}
-
-		if *hashWrite {
-			if err := repository.WriteObject(sha, content); err != nil {
-				fmt.Fprintf(os.Stderr, "error writing object: %v\n", err)
-				os.Exit(1)
-			}
-		}
-
-		fmt.Println(sha)
-
+		err = runHashObject(os.Args[2:])
+	case "cat-file":
+		err = runCatFile(os.Args[2:])
 	default:
 		printUsage()
 		os.Exit(1)
+	}
 
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
 	}
 }
 
-func printUsage() {
-	fmt.Printf("Usage: %s <command> [arguments]\n", os.Args[0])
-	fmt.Println("\nThe commands are:")
-	fmt.Println("    init                 Initialize a new git repository.")
-	fmt.Println("    hash-object          Compute object ID and optionally creates a blob from a file.")
-	fmt.Printf("\nUse \"%s <command> -h\" for more information about a command", os.Args[0])
+// runInit handles `rev init [path]`.
+func runInit(args []string) error {
+	fs := flag.NewFlagSet("init", flag.ContinueOnError)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 
+	dir := fs.Arg(0)
+	if dir == "" {
+		dir = "."
+	}
+
+	repo, err := repository.Init(dir)
+	if err != nil {
+		return fmt.Errorf("initializing repository: %w", err)
+	}
+
+	fmt.Printf("Initialized empty Git repository in %s\n", repo.GitDir)
+	return nil
 }
 
-func hashObject(filePath string) {
+// runHashObject handles `rev hash-object [-w] [--stdin] <file>`.
+func runHashObject(args []string) error {
+	fs := flag.NewFlagSet("hash-object", flag.ContinueOnError)
+	write := fs.Bool("w", false, "Write the object into the object database")
+	stdin := fs.Bool("stdin", false, "Read the object from standard input")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 
+	var reader io.Reader
+	var size int64
+
+	if *stdin {
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return fmt.Errorf("reading stdin: %w", err)
+		}
+		size = int64(len(data))
+		reader = bytes.NewReader(data)
+	} else {
+		filePath := fs.Arg(0)
+		if filePath == "" {
+			return fmt.Errorf("hash-object requires a file path or --stdin")
+		}
+
+		info, err := os.Stat(filePath)
+		if err != nil {
+			return fmt.Errorf("stat %s: %w", filePath, err)
+		}
+		size = info.Size()
+
+		f, err := os.Open(filePath)
+		if err != nil {
+			return fmt.Errorf("opening %s: %w", filePath, err)
+		}
+		defer f.Close()
+		reader = f
+	}
+
+	sha, fullObject, err := object.Hash(object.TypeBlob, reader, size)
+	if err != nil {
+		return fmt.Errorf("hashing object: %w", err)
+	}
+
+	if *write {
+		repo, err := repository.Open("")
+		if err != nil {
+			return err
+		}
+		if err := object.Write(repo.GitDir, sha, fullObject); err != nil {
+			return fmt.Errorf("writing object: %w", err)
+		}
+	}
+
+	fmt.Println(sha)
+	return nil
+}
+
+// runCatFile handles `rev cat-file (-t | -s | -e | -p) <hash>`.
+func runCatFile(args []string) error {
+	fs := flag.NewFlagSet("cat-file", flag.ContinueOnError)
+	showType := fs.Bool("t", false, "Show the object type")
+	showSize := fs.Bool("s", false, "Show the object size")
+	checkExists := fs.Bool("e", false, "Check if object exists (exit silently)")
+	prettyPrint := fs.Bool("p", false, "Pretty-print the object contents")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	hash := fs.Arg(0)
+	if hash == "" {
+		return fmt.Errorf("cat-file requires an object hash")
+	}
+
+	repo, err := repository.Open("")
+	if err != nil {
+		return err
+	}
+
+	// -e just checks existence, no need to fully parse.
+	if *checkExists {
+		return object.Exists(repo.GitDir, hash)
+	}
+
+	obj, err := object.Read(repo.GitDir, hash)
+	if err != nil {
+		return err
+	}
+
+	switch {
+	case *showType:
+		fmt.Println(obj.Type)
+	case *showSize:
+		fmt.Println(obj.Size)
+	case *prettyPrint:
+		fmt.Print(obj.PrettyPrint())
+	default:
+		return fmt.Errorf("cat-file requires one of: -t, -s, -e, -p")
+	}
+
+	return nil
+}
+
+func printUsage() {
+	fmt.Printf("usage: %s <command> [<args>]\n\n", os.Args[0])
+	fmt.Println("Commands:")
+	fmt.Println("  init           Initialize a new repository")
+	fmt.Println("  hash-object    Compute object ID and optionally write a blob")
+	fmt.Println("  cat-file       Display object type, size, or content")
 }
